@@ -5,41 +5,28 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 # -------------------------------
-# LOAD DATA (ROBUST VERSION)
+# LOAD DATA (FINAL FIXED VERSION)
 # -------------------------------
 @st.cache_data
 def load_data():
     df = pd.read_csv("leads_prediction.csv", encoding='utf-8-sig')
 
-    # Clean column names
-    df.columns = df.columns.str.strip()
+    # Standardize column names (VERY IMPORTANT)
+    df.columns = df.columns.str.strip().str.upper()
 
-    # Debug (optional)
-    # st.write("Columns:", df.columns.tolist())
+    # ✅ Rename to required format
+    df.rename(columns={
+        'MONTH_YEAR': 'month_year',
+        'CAMPAIGN_SITE': 'CAMPAIGN_SITE',
+        'BROADSOURCE': 'BROADSOURCE',
+        'LEADS': 'Leads',
+        'HIRED': 'Hired'
+    }, inplace=True)
 
-    # 🔥 Ensure month_year exists
-    if 'month_year' not in df.columns:
+    # ✅ Convert date
+    df['month_year'] = pd.to_datetime(df['month_year'])
 
-        if 'INVITATIONDT' in df.columns:
-            df['month_year'] = pd.to_datetime(df['INVITATIONDT']).dt.to_period('M').dt.to_timestamp()
-
-        elif 'Month_Year' in df.columns:
-            df.rename(columns={'Month_Year': 'month_year'}, inplace=True)
-            df['month_year'] = pd.to_datetime(df['month_year'])
-
-        else:
-            raise Exception("❌ No valid date column found (month_year / INVITATIONDT missing)")
-
-    else:
-        df['month_year'] = pd.to_datetime(df['month_year'])
-
-    # Ensure required columns exist
-    required_cols = ['CAMPAIGN_SITE', 'BROADSOURCE', 'Leads', 'Hired']
-    for col in required_cols:
-        if col not in df.columns:
-            raise Exception(f"❌ Missing required column: {col}")
-
-    # Aggregate safely
+    # Aggregate (safe)
     df = df.groupby(['month_year','CAMPAIGN_SITE','BROADSOURCE'], as_index=False).agg({
         'Leads':'sum',
         'Hired':'sum'
@@ -91,7 +78,7 @@ def run_arima(train_df):
                 'Predicted_Leads': max(forecast, 0)
             })
 
-        except Exception as e:
+        except:
             continue
 
     return pd.DataFrame(predictions)
@@ -190,11 +177,9 @@ st.sidebar.header("📉 Model Accuracy")
 st.sidebar.metric("RMSE", round(rmse, 2))
 st.sidebar.metric("MAPE", f"{round(mape*100, 2)} %")
 
-# Inputs
 site = st.selectbox("Select Campaign Site", sorted(df['CAMPAIGN_SITE'].unique()))
 target_hired = st.number_input("Enter Target HIRED", min_value=0, step=1)
 
-# Predict button
 if st.button("Predict"):
 
     base = calculate_required_leads(site, target_hired)
@@ -224,9 +209,3 @@ if st.button("Predict"):
     st.dataframe(final_output)
 
     st.bar_chart(final_output.set_index('BROADSOURCE')['Lead Count Required'])
-
-# -------------------------------
-# DEBUG (optional toggle)
-# -------------------------------
-with st.expander("🔍 Debug Data"):
-    st.write(df.head())

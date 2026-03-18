@@ -110,9 +110,6 @@ for i in range(3, 0, -1):
 
     for site, group in merged.groupby('CAMPAIGN_SITE'):
 
-        if len(group) == 0:
-            continue
-
         rmse_site = np.sqrt(mean_squared_error(group['Leads'], group['Predicted_Leads']))
         mape_site = mean_absolute_percentage_error(group['Leads'], group['Predicted_Leads'])
 
@@ -151,7 +148,6 @@ def calculate_required_leads(site, target_hired):
     return site_data
 
 
-# 🔥 FIXED FUNCTION
 def apply_constraints(site_data, df, site=None):
 
     results = []
@@ -159,7 +155,11 @@ def apply_constraints(site_data, df, site=None):
     for _, row in site_data.iterrows():
 
         source = row['BROADSOURCE']
-        required = float(row['required_leads'])  # FIX
+
+        required = row['required_leads']
+        if isinstance(required, pd.Series):
+            required = required.iloc[0]
+        required = float(required)
 
         if site:
             max_leads = df[
@@ -202,14 +202,12 @@ st.title("📊 Lead Prediction Calculator (ML + ARIMA)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
-# Sidebar
 st.sidebar.header("📉 Rolling Accuracy (Overall)")
 st.sidebar.dataframe(rolling_accuracy_df)
 
 st.sidebar.header("📍 Site-wise Rolling Accuracy")
 st.sidebar.dataframe(site_rolling_accuracy_df)
 
-# Inputs
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)
 
@@ -241,11 +239,9 @@ if st.button("Predict"):
 
         base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
 
-        constrained = apply_constraints(
-            base.rename(columns={'final_leads':'required_leads'}),
-            df,
-            site=None
-        )
+        base['required_leads'] = base['final_leads']  # ✅ FIX
+
+        constrained = apply_constraints(base, df, site=None)
 
         output = base.merge(constrained, on='BROADSOURCE')
         output['CAMPAIGN_SITE'] = "All Sites"
@@ -265,15 +261,15 @@ if st.button("Predict"):
 
         base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
 
-        constrained = apply_constraints(
-            base.rename(columns={'final_leads':'required_leads'}),
-            df,
-            site=site
-        )
+        base['required_leads'] = base['final_leads']  # ✅ FIX
+
+        constrained = apply_constraints(base, df, site=site)
 
         output = base.merge(constrained, on='BROADSOURCE')
 
-    # Final formatting
+    # -------------------------------
+    # FINAL OUTPUT
+    # -------------------------------
     output['Share of HIRED'] = (output['share_hired'] * 100).round(2)
     output['L-H Conversion %'] = (output['conversion_rate'] * 100).round(2)
     output['Lead Count Required'] = output['capped_leads'].round().astype(int)

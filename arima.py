@@ -189,7 +189,7 @@ def apply_constraints(site_data, df, site=None):
 # -------------------------------
 # STREAMLIT UI
 # -------------------------------
-st.title("📊 Lead Prediction Calculator (ARIMA)")
+st.title("📊 Lead Prediction Calculator (ML + ARIMA)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
@@ -225,13 +225,34 @@ if st.button("Predict"):
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
         base = base.replace([np.inf, -np.inf], 0).fillna(0)
 
-        constrained = apply_constraints(base, df, site=None)
+        arima_agg = pred_df.groupby('BROADSOURCE')['Predicted_Leads'].sum().reset_index()
+
+        base = base.merge(arima_agg, on='BROADSOURCE', how='left')
+        base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
+
+        base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
+
+        constrained = apply_constraints(base.rename(columns={'final_leads':'required_leads'}), df, site=None)
+
         output = base.merge(constrained, on='BROADSOURCE')
         output['CAMPAIGN_SITE'] = "All Sites"
 
     else:
         base = calculate_required_leads(site, target_hired)
-        constrained = apply_constraints(base, df, site=site)
+
+        arima_site = pred_df[pred_df['CAMPAIGN_SITE'] == site]
+
+        base = base.merge(arima_site[['BROADSOURCE','Predicted_Leads']], on='BROADSOURCE', how='left')
+        base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
+
+        base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
+
+        constrained = apply_constraints(
+            base.rename(columns={'final_leads':'required_leads'}),
+            df,
+            site=site
+        )
+
         output = base.merge(constrained, on='BROADSOURCE')
 
     # Final formatting
@@ -244,10 +265,11 @@ if st.button("Predict"):
         'BROADSOURCE',
         'Share of HIRED',
         'L-H Conversion %',
+        'Predicted_Leads',
         'Lead Count Required'
     ]]
 
-    st.subheader("📈 Predicted Output")
+    st.subheader("📈 Predicted Output (ML + Business)")
     st.dataframe(final_output)
 
     st.bar_chart(final_output.set_index('BROADSOURCE')['Lead Count Required'])

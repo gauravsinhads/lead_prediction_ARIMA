@@ -76,11 +76,13 @@ def run_arima(train_df):
 pred_df = run_arima(train_df)
 
 # -------------------------------
-# ROLLING ACCURACY (LAST 3 MONTHS)
+# ROLLING ACCURACY (OVERALL + SITE)
 # -------------------------------
 rolling_results = []
+site_rolling_results = []
 
 for i in range(3, 0, -1):
+
     test_month = current_month - pd.DateOffset(months=i)
 
     train_temp = df[df['month_year'] < test_month]
@@ -88,21 +90,43 @@ for i in range(3, 0, -1):
 
     pred_temp = run_arima(train_temp)
 
-    merged = pred_temp.merge(test_temp, on=['CAMPAIGN_SITE','BROADSOURCE'], how='inner')
+    merged = pred_temp.merge(
+        test_temp,
+        on=['CAMPAIGN_SITE','BROADSOURCE'],
+        how='inner'
+    )
 
     if len(merged) == 0:
         continue
 
+    # Overall
     rmse = np.sqrt(mean_squared_error(merged['Leads'], merged['Predicted_Leads']))
     mape = mean_absolute_percentage_error(merged['Leads'], merged['Predicted_Leads'])
 
     rolling_results.append({
         'Month': test_month.strftime('%Y-%m'),
-        'RMSE': round(rmse,2),
-        'MAPE (%)': round(mape*100,2)
+        'RMSE': round(rmse, 2),
+        'MAPE (%)': round(mape * 100, 2)
     })
 
+    # Site-level
+    for site, group in merged.groupby('CAMPAIGN_SITE'):
+
+        if len(group) == 0:
+            continue
+
+        rmse_site = np.sqrt(mean_squared_error(group['Leads'], group['Predicted_Leads']))
+        mape_site = mean_absolute_percentage_error(group['Leads'], group['Predicted_Leads'])
+
+        site_rolling_results.append({
+            'Month': test_month.strftime('%Y-%m'),
+            'CAMPAIGN_SITE': site,
+            'RMSE': round(rmse_site, 2),
+            'MAPE (%)': round(mape_site * 100, 2)
+        })
+
 rolling_accuracy_df = pd.DataFrame(rolling_results)
+site_rolling_accuracy_df = pd.DataFrame(site_rolling_results)
 
 # -------------------------------
 # HISTORICAL METRICS
@@ -162,22 +186,21 @@ def apply_constraints(site_data, df, site=None):
 
     return final_df
 
-
 # -------------------------------
 # STREAMLIT UI
 # -------------------------------
 st.title("📊 Lead Prediction Calculator (ARIMA)")
 
-# Show prediction month
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
 # Sidebar accuracy
-st.sidebar.header("📉 Rolling Model Accuracy (Last 3 Months)")
+st.sidebar.header("📉 Rolling Accuracy (Overall)")
+st.sidebar.dataframe(rolling_accuracy_df)
 
-if len(rolling_accuracy_df) > 0:
-    st.sidebar.dataframe(rolling_accuracy_df)
+st.sidebar.header("📍 Site-wise Rolling Accuracy")
+st.sidebar.dataframe(site_rolling_accuracy_df)
 
-# Input
+# Inputs
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)
 
@@ -190,7 +213,6 @@ if st.button("Predict"):
 
     if site == "All Sites":
 
-        # Aggregate across all sites per BROADSOURCE
         base = df.groupby('BROADSOURCE').agg({
             'Leads':'sum',
             'Hired':'sum'
@@ -204,7 +226,6 @@ if st.button("Predict"):
         base = base.replace([np.inf, -np.inf], 0).fillna(0)
 
         constrained = apply_constraints(base, df, site=None)
-
         output = base.merge(constrained, on='BROADSOURCE')
         output['CAMPAIGN_SITE'] = "All Sites"
 
@@ -230,3 +251,16 @@ if st.button("Predict"):
     st.dataframe(final_output)
 
     st.bar_chart(final_output.set_index('BROADSOURCE')['Lead Count Required'])
+
+# -------------------------------
+# VISUALS
+# -------------------------------
+st.subheader("📉 Overall Rolling Accuracy Trend")
+if len(rolling_accuracy_df) > 0:
+    st.line_chart(rolling_accuracy_df.set_index('Month')['MAPE (%)'])
+
+st.subheader("📍 Site-wise Avg Accuracy")
+if len(site_rolling_accuracy_df) > 0:
+    st.bar_chart(
+        site_rolling_accuracy_df.groupby('CAMPAIGN_SITE')['MAPE (%)'].mean()
+    )

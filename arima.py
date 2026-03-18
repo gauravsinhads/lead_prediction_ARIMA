@@ -5,22 +5,52 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 # -------------------------------
-# LOAD DATA
+# LOAD DATA (ROBUST VERSION)
 # -------------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv("leads_prediction.csv")
-    df['month_year'] = pd.to_datetime(df['month_year'])
+    df = pd.read_csv("leads_prediction.csv", encoding='utf-8-sig')
 
+    # Clean column names
+    df.columns = df.columns.str.strip()
+
+    # Debug (optional)
+    # st.write("Columns:", df.columns.tolist())
+
+    # 🔥 Ensure month_year exists
+    if 'month_year' not in df.columns:
+
+        if 'INVITATIONDT' in df.columns:
+            df['month_year'] = pd.to_datetime(df['INVITATIONDT']).dt.to_period('M').dt.to_timestamp()
+
+        elif 'Month_Year' in df.columns:
+            df.rename(columns={'Month_Year': 'month_year'}, inplace=True)
+            df['month_year'] = pd.to_datetime(df['month_year'])
+
+        else:
+            raise Exception("❌ No valid date column found (month_year / INVITATIONDT missing)")
+
+    else:
+        df['month_year'] = pd.to_datetime(df['month_year'])
+
+    # Ensure required columns exist
+    required_cols = ['CAMPAIGN_SITE', 'BROADSOURCE', 'Leads', 'Hired']
+    for col in required_cols:
+        if col not in df.columns:
+            raise Exception(f"❌ Missing required column: {col}")
+
+    # Aggregate safely
     df = df.groupby(['month_year','CAMPAIGN_SITE','BROADSOURCE'], as_index=False).agg({
         'Leads':'sum',
         'Hired':'sum'
     })
 
+    # Conversion rate
     df['conversion_rate'] = df['Hired'] / df['Leads']
-    df['conversion_rate'] = df['conversion_rate'].fillna(0)
+    df['conversion_rate'] = df['conversion_rate'].replace([np.inf, -np.inf], 0).fillna(0)
 
     return df
+
 
 df = load_data()
 
@@ -61,10 +91,11 @@ def run_arima(train_df):
                 'Predicted_Leads': max(forecast, 0)
             })
 
-        except:
+        except Exception as e:
             continue
 
     return pd.DataFrame(predictions)
+
 
 pred_df = run_arima(train_df)
 
@@ -85,7 +116,7 @@ else:
     mape = 0
 
 # -------------------------------
-# HISTORICAL SHARE
+# HISTORICAL METRICS
 # -------------------------------
 hist = df.groupby(['CAMPAIGN_SITE','BROADSOURCE']).agg({
     'Leads':'sum',
@@ -94,7 +125,7 @@ hist = df.groupby(['CAMPAIGN_SITE','BROADSOURCE']).agg({
 
 hist['share_hired'] = hist['Hired'] / hist.groupby('CAMPAIGN_SITE')['Hired'].transform('sum')
 hist['conversion_rate'] = hist['Hired'] / hist['Leads']
-hist = hist.fillna(0)
+hist = hist.replace([np.inf, -np.inf], 0).fillna(0)
 
 # -------------------------------
 # FUNCTIONS
@@ -113,7 +144,6 @@ def calculate_required_leads(site, target_hired):
 def apply_constraints(site_data, df):
 
     results = []
-
     site = site_data['CAMPAIGN_SITE'].iloc[0]
 
     for _, row in site_data.iterrows():
@@ -139,7 +169,7 @@ def apply_constraints(site_data, df):
 
     final_df = pd.DataFrame(results)
 
-    # redistribute excess to Social Media
+    # Redistribute to Social Media
     excess_total = final_df['excess'].sum()
 
     if 'Social Media' in final_df['BROADSOURCE'].values:
@@ -154,17 +184,17 @@ def apply_constraints(site_data, df):
 # -------------------------------
 # STREAMLIT UI
 # -------------------------------
-st.title("📊 Lead Prediction Calculator")
+st.title("📊 Lead Prediction Calculator (ARIMA)")
 
-st.sidebar.header("Model Accuracy")
-st.sidebar.metric("RMSE", round(rmse,2))
-st.sidebar.metric("MAPE", f"{round(mape*100,2)} %")
+st.sidebar.header("📉 Model Accuracy")
+st.sidebar.metric("RMSE", round(rmse, 2))
+st.sidebar.metric("MAPE", f"{round(mape*100, 2)} %")
 
 # Inputs
 site = st.selectbox("Select Campaign Site", sorted(df['CAMPAIGN_SITE'].unique()))
-target_hired = st.number_input("Enter Target Hired", min_value=0, step=1)
+target_hired = st.number_input("Enter Target HIRED", min_value=0, step=1)
 
-# Prediction
+# Predict button
 if st.button("Predict"):
 
     base = calculate_required_leads(site, target_hired)
@@ -193,5 +223,10 @@ if st.button("Predict"):
     st.subheader("📈 Predicted Next Month Output")
     st.dataframe(final_output)
 
-    # Optional chart
     st.bar_chart(final_output.set_index('BROADSOURCE')['Lead Count Required'])
+
+# -------------------------------
+# DEBUG (optional toggle)
+# -------------------------------
+with st.expander("🔍 Debug Data"):
+    st.write(df.head())

@@ -11,26 +11,21 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 def load_data():
     df = pd.read_csv("leads_prediction.csv", encoding='utf-8-sig')
 
-    # Standardize column names
     df.columns = df.columns.str.strip().str.upper()
 
-    # Rename columns
     df.rename(columns={
         'MONTH_YEAR': 'month_year',
         'LEADS': 'Leads',
         'HIRED': 'Hired'
     }, inplace=True)
 
-    # Convert date
     df['month_year'] = pd.to_datetime(df['month_year'])
 
-    # Aggregate
     df = df.groupby(['month_year','CAMPAIGN_SITE','BROADSOURCE'], as_index=False).agg({
         'Leads':'sum',
         'Hired':'sum'
     })
 
-    # Conversion rate
     df['conversion_rate'] = df['Hired'] / df['Leads']
     df['conversion_rate'] = df['conversion_rate'].replace([np.inf, -np.inf], 0).fillna(0)
 
@@ -58,7 +53,6 @@ def run_arima(train_df):
     predictions = []
 
     for (site, source), group in train_df.groupby(['CAMPAIGN_SITE','BROADSOURCE']):
-
         ts = group.sort_values('month_year').set_index('month_year')['Leads']
 
         if len(ts) < 3:
@@ -67,7 +61,6 @@ def run_arima(train_df):
         try:
             model = ARIMA(ts, order=(1,1,1))
             model_fit = model.fit()
-
             forecast = model_fit.forecast(steps=1)[0]
 
             predictions.append({
@@ -75,7 +68,6 @@ def run_arima(train_df):
                 'BROADSOURCE': source,
                 'Predicted_Leads': max(forecast, 0)
             })
-
         except:
             continue
 
@@ -101,6 +93,30 @@ else:
     mape = 0
 
 # -------------------------------
+# SITE-LEVEL ACCURACY (NEW)
+# -------------------------------
+site_accuracy_list = []
+
+for site, group in accuracy_df.groupby('CAMPAIGN_SITE'):
+    if len(group) == 0:
+        continue
+
+    rmse_site = np.sqrt(mean_squared_error(group['Leads'], group['Predicted_Leads']))
+    mape_site = mean_absolute_percentage_error(group['Leads'], group['Predicted_Leads'])
+
+    site_accuracy_list.append({
+        'CAMPAIGN_SITE': site,
+        'RMSE': round(rmse_site, 2),
+        'MAPE (%)': round(mape_site * 100, 2)
+    })
+
+site_accuracy_df = pd.DataFrame(site_accuracy_list)
+
+# Sort worst → best
+if len(site_accuracy_df) > 0:
+    site_accuracy_df = site_accuracy_df.sort_values(by='MAPE (%)', ascending=False)
+
+# -------------------------------
 # HISTORICAL METRICS
 # -------------------------------
 hist = df.groupby(['CAMPAIGN_SITE','BROADSOURCE']).agg({
@@ -116,7 +132,6 @@ hist = hist.replace([np.inf, -np.inf], 0).fillna(0)
 # FUNCTIONS
 # -------------------------------
 def calculate_required_leads(site, target_hired):
-
     site_data = hist[hist['CAMPAIGN_SITE'] == site].copy()
 
     site_data['target_hired'] = site_data['share_hired'] * target_hired
@@ -132,7 +147,6 @@ def apply_constraints(site_data, df):
     site = site_data['CAMPAIGN_SITE'].iloc[0]
 
     for _, row in site_data.iterrows():
-
         source = row['BROADSOURCE']
         required = row['required_leads']
 
@@ -154,7 +168,7 @@ def apply_constraints(site_data, df):
 
     final_df = pd.DataFrame(results)
 
-    # Redistribute excess to Social Media
+    # Redistribute to Social Media
     excess_total = final_df['excess'].sum()
 
     if 'Social Media' in final_df['BROADSOURCE'].values:
@@ -175,7 +189,7 @@ st.sidebar.header("📉 Model Accuracy")
 st.sidebar.metric("RMSE", round(rmse, 2))
 st.sidebar.metric("MAPE", f"{round(mape*100, 2)} %")
 
-# Add All Sites option
+# All Sites option
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)
 
@@ -188,24 +202,19 @@ if st.button("Predict"):
 
     if site == "All Sites":
         base = hist.copy()
-
         base['target_hired'] = base['share_hired'] * target_hired
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
         base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
         constrained = apply_constraints(base, df)
-
         output = base.merge(constrained, on='BROADSOURCE')
 
     else:
         base = calculate_required_leads(site, target_hired)
         constrained = apply_constraints(base, df)
-
         output = base.merge(constrained, on='BROADSOURCE')
 
-    # -------------------------------
-    # FINAL OUTPUT FORMATTING
-    # -------------------------------
+    # Final formatting
     output['Share of HIRED'] = (output['share_hired'] * 100).round(2)
     output['L-H Conversion %'] = (output['conversion_rate'] * 100).round(2)
     output['Lead Count Required'] = output['capped_leads'].round().astype(int)
@@ -222,3 +231,14 @@ if st.button("Predict"):
     st.dataframe(final_output)
 
     st.bar_chart(final_output.set_index('BROADSOURCE')['Lead Count Required'])
+
+# -------------------------------
+# SITE LEVEL ACCURACY DISPLAY
+# -------------------------------
+st.subheader("📍 Site-Level Model Accuracy")
+
+if len(site_accuracy_df) > 0:
+    st.dataframe(site_accuracy_df)
+    st.bar_chart(site_accuracy_df.set_index('CAMPAIGN_SITE')['MAPE (%)'])
+else:
+    st.write("No accuracy data available.")

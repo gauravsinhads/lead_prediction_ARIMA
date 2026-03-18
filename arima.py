@@ -66,7 +66,7 @@ def run_arima(train_df):
             predictions.append({
                 'CAMPAIGN_SITE': site,
                 'BROADSOURCE': source,
-                'Predicted_Leads': max(forecast, 0)
+                'Predicted_Leads': max(float(forecast), 0)
             })
         except:
             continue
@@ -76,7 +76,7 @@ def run_arima(train_df):
 pred_df = run_arima(train_df)
 
 # -------------------------------
-# ROLLING ACCURACY (OVERALL + SITE)
+# ROLLING ACCURACY
 # -------------------------------
 rolling_results = []
 site_rolling_results = []
@@ -99,7 +99,6 @@ for i in range(3, 0, -1):
     if len(merged) == 0:
         continue
 
-    # Overall
     rmse = np.sqrt(mean_squared_error(merged['Leads'], merged['Predicted_Leads']))
     mape = mean_absolute_percentage_error(merged['Leads'], merged['Predicted_Leads'])
 
@@ -109,7 +108,6 @@ for i in range(3, 0, -1):
         'MAPE (%)': round(mape * 100, 2)
     })
 
-    # Site-level
     for site, group in merged.groupby('CAMPAIGN_SITE'):
 
         if len(group) == 0:
@@ -153,20 +151,28 @@ def calculate_required_leads(site, target_hired):
     return site_data
 
 
+# 🔥 FIXED FUNCTION
 def apply_constraints(site_data, df, site=None):
 
     results = []
 
     for _, row in site_data.iterrows():
+
         source = row['BROADSOURCE']
-        required = row['required_leads']
+        required = float(row['required_leads'])  # FIX
 
         if site:
-            max_leads = df[(df['CAMPAIGN_SITE']==site)&(df['BROADSOURCE']==source)]['Leads'].max()
+            max_leads = df[
+                (df['CAMPAIGN_SITE'] == site) &
+                (df['BROADSOURCE'] == source)
+            ]['Leads'].max()
         else:
-            max_leads = df[df['BROADSOURCE']==source]['Leads'].max()
+            max_leads = df[df['BROADSOURCE'] == source]['Leads'].max()
 
-        limit = 1.5 * max_leads if pd.notnull(max_leads) else required
+        if pd.isna(max_leads):
+            limit = required
+        else:
+            limit = 1.5 * float(max_leads)
 
         capped = min(required, limit)
         excess = required - capped
@@ -182,7 +188,10 @@ def apply_constraints(site_data, df, site=None):
     excess_total = final_df['excess'].sum()
 
     if 'Social Media' in final_df['BROADSOURCE'].values:
-        final_df.loc[final_df['BROADSOURCE']=='Social Media','capped_leads'] += excess_total
+        final_df.loc[
+            final_df['BROADSOURCE'] == 'Social Media',
+            'capped_leads'
+        ] += excess_total
 
     return final_df
 
@@ -193,7 +202,7 @@ st.title("📊 Lead Prediction Calculator (ML + ARIMA)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
-# Sidebar accuracy
+# Sidebar
 st.sidebar.header("📉 Rolling Accuracy (Overall)")
 st.sidebar.dataframe(rolling_accuracy_df)
 
@@ -232,7 +241,11 @@ if st.button("Predict"):
 
         base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
 
-        constrained = apply_constraints(base.rename(columns={'final_leads':'required_leads'}), df, site=None)
+        constrained = apply_constraints(
+            base.rename(columns={'final_leads':'required_leads'}),
+            df,
+            site=None
+        )
 
         output = base.merge(constrained, on='BROADSOURCE')
         output['CAMPAIGN_SITE'] = "All Sites"
@@ -242,7 +255,12 @@ if st.button("Predict"):
 
         arima_site = pred_df[pred_df['CAMPAIGN_SITE'] == site]
 
-        base = base.merge(arima_site[['BROADSOURCE','Predicted_Leads']], on='BROADSOURCE', how='left')
+        base = base.merge(
+            arima_site[['BROADSOURCE','Predicted_Leads']],
+            on='BROADSOURCE',
+            how='left'
+        )
+
         base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
         base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)

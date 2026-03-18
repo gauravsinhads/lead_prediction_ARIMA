@@ -5,28 +5,26 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 # -------------------------------
-# LOAD DATA (FINAL FIXED VERSION)
+# LOAD DATA
 # -------------------------------
 @st.cache_data
 def load_data():
     df = pd.read_csv("leads_prediction.csv", encoding='utf-8-sig')
 
-    # Standardize column names (VERY IMPORTANT)
+    # Standardize column names
     df.columns = df.columns.str.strip().str.upper()
 
-    # ✅ Rename to required format
+    # Rename columns
     df.rename(columns={
         'MONTH_YEAR': 'month_year',
-        'CAMPAIGN_SITE': 'CAMPAIGN_SITE',
-        'BROADSOURCE': 'BROADSOURCE',
         'LEADS': 'Leads',
         'HIRED': 'Hired'
     }, inplace=True)
 
-    # ✅ Convert date
+    # Convert date
     df['month_year'] = pd.to_datetime(df['month_year'])
 
-    # Aggregate (safe)
+    # Aggregate
     df = df.groupby(['month_year','CAMPAIGN_SITE','BROADSOURCE'], as_index=False).agg({
         'Leads':'sum',
         'Hired':'sum'
@@ -156,7 +154,7 @@ def apply_constraints(site_data, df):
 
     final_df = pd.DataFrame(results)
 
-    # Redistribute to Social Media
+    # Redistribute excess to Social Media
     excess_total = final_df['excess'].sum()
 
     if 'Social Media' in final_df['BROADSOURCE'].values:
@@ -177,33 +175,48 @@ st.sidebar.header("📉 Model Accuracy")
 st.sidebar.metric("RMSE", round(rmse, 2))
 st.sidebar.metric("MAPE", f"{round(mape*100, 2)} %")
 
-site = st.selectbox("Select Campaign Site", sorted(df['CAMPAIGN_SITE'].unique()))
+# Add All Sites option
+site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
+site = st.selectbox("Select Campaign Site", site_options)
+
 target_hired = st.number_input("Enter Target HIRED", min_value=0, step=1)
 
+# -------------------------------
+# PREDICTION
+# -------------------------------
 if st.button("Predict"):
 
-    base = calculate_required_leads(site, target_hired)
-    constrained = apply_constraints(base, df)
+    if site == "All Sites":
+        base = hist.copy()
 
-    output = base.merge(constrained, on='BROADSOURCE')
+        base['target_hired'] = base['share_hired'] * target_hired
+        base['required_leads'] = base['target_hired'] / base['conversion_rate']
+        base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-    output['L-H Conversion %'] = output['conversion_rate'] * 100
+        constrained = apply_constraints(base, df)
+
+        output = base.merge(constrained, on='BROADSOURCE')
+
+    else:
+        base = calculate_required_leads(site, target_hired)
+        constrained = apply_constraints(base, df)
+
+        output = base.merge(constrained, on='BROADSOURCE')
+
+    # -------------------------------
+    # FINAL OUTPUT FORMATTING
+    # -------------------------------
+    output['Share of HIRED'] = (output['share_hired'] * 100).round(2)
+    output['L-H Conversion %'] = (output['conversion_rate'] * 100).round(2)
+    output['Lead Count Required'] = output['capped_leads'].round().astype(int)
 
     final_output = output[[
-        'CAMPAIGN_SITE',
-        'BROADSOURCE',
-        'share_hired',
-        'L-H Conversion %',
-        'capped_leads'
-    ]]
-
-    final_output.columns = [
         'CAMPAIGN_SITE',
         'BROADSOURCE',
         'Share of HIRED',
         'L-H Conversion %',
         'Lead Count Required'
-    ]
+    ]]
 
     st.subheader("📈 Predicted Next Month Output")
     st.dataframe(final_output)

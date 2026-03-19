@@ -246,6 +246,9 @@ st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 st.sidebar.header("📉 Accuracy (Final Output Based)")
 st.sidebar.dataframe(rolling_accuracy_df)
 
+st.sidebar.subheader("📍 Site-Level Accuracy")
+st.sidebar.dataframe(site_level_accuracy_df)
+
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)
 

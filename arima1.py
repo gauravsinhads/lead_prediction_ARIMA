@@ -187,6 +187,56 @@ for i in range(3, 0, -1):
 rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
+# SITE-LEVEL ROLLING ACCURACY (ADDED)
+# -------------------------------
+site_level_results = []
+
+for i in range(3, 0, -1):
+
+    test_month = current_month - pd.DateOffset(months=i)
+
+    train_temp = df[df['month_year'] < test_month]
+    test_temp = df[df['month_year'] == test_month]
+
+    pred_temp = run_arima(train_temp)
+
+    base = test_temp.copy()
+
+    base = base.merge(pred_temp, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
+    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
+
+    base['required_leads'] = base['Hired'] / base['conversion_rate']
+    base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
+    base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    for site_name, grp in base.groupby('CAMPAIGN_SITE'):
+
+        actual_total = grp['Leads'].sum()
+        predicted_total = grp['final_leads'].sum()
+
+        eval_df = grp[['Leads','final_leads']].replace([np.inf, -np.inf], np.nan).dropna()
+
+        if len(eval_df) > 0:
+            rmse = np.sqrt(mean_squared_error(eval_df['Leads'], eval_df['final_leads']))
+            mape = mean_absolute_percentage_error(eval_df['Leads'], eval_df['final_leads'])
+        else:
+            rmse = 0
+            mape = 0
+
+        site_level_results.append({
+            'Month': test_month.strftime('%Y-%m'),
+            'CAMPAIGN_SITE': site_name,
+            'Actual Leads': round(actual_total, 2),
+            'Predicted Leads (Final)': round(predicted_total, 2),
+            'RMSE': round(rmse, 2),
+            'MAPE (%)': round(mape * 100, 2)
+        })
+
+site_level_accuracy_df = pd.DataFrame(site_level_results)
+
+# -------------------------------
 # STREAMLIT UI
 # -------------------------------
 st.title("📊 Lead Prediction Calculator (Final ML Output)")

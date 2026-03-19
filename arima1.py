@@ -139,7 +139,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (UPDATED)
+# ROLLING ACCURACY (BUSINESS-ALIGNED)
 # -------------------------------
 rolling_results = []
 
@@ -163,17 +163,15 @@ for i in range(3, 0, -1):
     base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
     base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-    # Aggregate actual and predicted
+    # BUSINESS-LEVEL METRICS
     actual_total = base['Leads'].sum()
     predicted_total = base['final_leads'].sum()
 
-    eval_df = base[['Leads','final_leads']].replace([np.inf, -np.inf], np.nan).dropna()
+    rmse = abs(actual_total - predicted_total)
 
-    if len(eval_df) > 0:
-        rmse = np.sqrt(mean_squared_error(eval_df['Leads'], eval_df['final_leads']))
-        mape = mean_absolute_percentage_error(eval_df['Leads'], eval_df['final_leads'])
+    if actual_total != 0:
+        mape = rmse / actual_total
     else:
-        rmse = 0
         mape = 0
 
     rolling_results.append({
@@ -187,7 +185,7 @@ for i in range(3, 0, -1):
 rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
-# SITE-LEVEL ROLLING ACCURACY (ADDED)
+# SITE-LEVEL ROLLING ACCURACY (BUSINESS-ALIGNED)
 # -------------------------------
 site_level_results = []
 
@@ -216,13 +214,11 @@ for i in range(3, 0, -1):
         actual_total = grp['Leads'].sum()
         predicted_total = grp['final_leads'].sum()
 
-        eval_df = grp[['Leads','final_leads']].replace([np.inf, -np.inf], np.nan).dropna()
+        rmse = abs(actual_total - predicted_total)
 
-        if len(eval_df) > 0:
-            rmse = np.sqrt(mean_squared_error(eval_df['Leads'], eval_df['final_leads']))
-            mape = mean_absolute_percentage_error(eval_df['Leads'], eval_df['final_leads'])
+        if actual_total != 0:
+            mape = rmse / actual_total
         else:
-            rmse = 0
             mape = 0
 
         site_level_results.append({

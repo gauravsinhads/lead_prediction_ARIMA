@@ -85,7 +85,7 @@ hist['conversion_rate'] = hist['Hired'] / hist['Leads']
 hist = hist.replace([np.inf, -np.inf], 0).fillna(0)
 
 # -------------------------------
-# FINAL LEADS FUNCTION (ML + BUSINESS)
+# FINAL LEADS FUNCTION
 # -------------------------------
 def compute_final_leads(base, df, site=None):
 
@@ -94,8 +94,15 @@ def compute_final_leads(base, df, site=None):
     for _, row in base.iterrows():
 
         source = row['BROADSOURCE']
-        required = float(row['required_leads'])
+
+        required = float(row.get('required_leads', 0))
         predicted = float(row.get('Predicted_Leads', 0))
+
+        # Replace invalid values
+        if np.isnan(required) or np.isinf(required):
+            required = 0
+        if np.isnan(predicted) or np.isinf(predicted):
+            predicted = 0
 
         final = max(required, predicted)
 
@@ -107,7 +114,10 @@ def compute_final_leads(base, df, site=None):
         else:
             max_leads = df[df['BROADSOURCE'] == source]['Leads'].max()
 
-        limit = 1.5 * max_leads if pd.notnull(max_leads) else final
+        if pd.isna(max_leads):
+            limit = final
+        else:
+            limit = 1.5 * float(max_leads)
 
         capped = min(final, limit)
         excess = final - capped
@@ -131,7 +141,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (FINAL OUTPUT BASED)
+# ROLLING ACCURACY (SAFE)
 # -------------------------------
 rolling_results = []
 
@@ -144,24 +154,26 @@ for i in range(3, 0, -1):
 
     pred_temp = run_arima(train_temp)
 
-    # build base
     base = test_temp.copy()
 
     base = base.merge(pred_temp, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
     base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
     base['required_leads'] = base['Hired'] / base['conversion_rate']
+    base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-    # compute final
-    final_vals = []
+    base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
+    base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-    for _, row in base.iterrows():
-        final_vals.append(max(row['required_leads'], row['Predicted_Leads']))
+    # SAFE METRICS
+    eval_df = base[['Leads','final_leads']].replace([np.inf, -np.inf], np.nan).dropna()
 
-    base['final_leads'] = final_vals
-
-    rmse = np.sqrt(mean_squared_error(base['Leads'], base['final_leads']))
-    mape = mean_absolute_percentage_error(base['Leads'], base['final_leads'])
+    if len(eval_df) > 0:
+        rmse = np.sqrt(mean_squared_error(eval_df['Leads'], eval_df['final_leads']))
+        mape = mean_absolute_percentage_error(eval_df['Leads'], eval_df['final_leads'])
+    else:
+        rmse = 0
+        mape = 0
 
     rolling_results.append({
         'Month': test_month.strftime('%Y-%m'),
@@ -203,10 +215,12 @@ if st.button("Predict"):
 
         base['target_hired'] = base['share_hired'] * target_hired
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
+        base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
         arima_agg = pred_df.groupby('BROADSOURCE')['Predicted_Leads'].sum().reset_index()
 
         base = base.merge(arima_agg, on='BROADSOURCE', how='left')
+        base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
         output = compute_final_leads(base, df, site=None)
         output['CAMPAIGN_SITE'] = "All Sites"
@@ -216,10 +230,12 @@ if st.button("Predict"):
 
         base['target_hired'] = base['share_hired'] * target_hired
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
+        base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
         arima_site = pred_df[pred_df['CAMPAIGN_SITE'] == site]
 
         base = base.merge(arima_site[['BROADSOURCE','Predicted_Leads']], on='BROADSOURCE', how='left')
+        base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
         output = compute_final_leads(base, df, site=site)
         output['CAMPAIGN_SITE'] = site

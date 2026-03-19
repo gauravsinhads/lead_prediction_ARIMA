@@ -98,7 +98,6 @@ def compute_final_leads(base, df, site=None):
         required = float(row.get('required_leads', 0))
         predicted = float(row.get('Predicted_Leads', 0))
 
-        # Replace invalid values
         if np.isnan(required) or np.isinf(required):
             required = 0
         if np.isnan(predicted) or np.isinf(predicted):
@@ -130,7 +129,6 @@ def compute_final_leads(base, df, site=None):
 
     final_df = pd.DataFrame(results)
 
-    # redistribute excess
     if 'Social Media' in final_df['BROADSOURCE'].values:
         excess_total = final_df['excess'].sum()
         final_df.loc[
@@ -141,7 +139,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (SAFE)
+# ROLLING ACCURACY (UPDATED)
 # -------------------------------
 rolling_results = []
 
@@ -165,7 +163,10 @@ for i in range(3, 0, -1):
     base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
     base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-    # SAFE METRICS
+    # Aggregate actual and predicted
+    actual_total = base['Leads'].sum()
+    predicted_total = base['final_leads'].sum()
+
     eval_df = base[['Leads','final_leads']].replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(eval_df) > 0:
@@ -177,6 +178,8 @@ for i in range(3, 0, -1):
 
     rolling_results.append({
         'Month': test_month.strftime('%Y-%m'),
+        'Actual Leads': round(actual_total, 2),
+        'Predicted Leads (Final)': round(predicted_total, 2),
         'RMSE': round(rmse, 2),
         'MAPE (%)': round(mape * 100, 2)
     })

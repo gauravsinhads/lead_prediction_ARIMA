@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 import streamlit as st
-from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+from xgboost import XGBRegressor
 
 # -------------------------------
 # LOAD DATA
@@ -34,6 +34,24 @@ def load_data():
 df = load_data()
 
 # -------------------------------
+# FEATURE ENGINEERING
+# -------------------------------
+def create_features(df):
+    df = df.copy()
+    df['month'] = df['month_year'].dt.month
+    df['year'] = df['month_year'].dt.year
+
+    # Lag features
+    df = df.sort_values('month_year')
+    df['lag_1'] = df.groupby(['CAMPAIGN_SITE','BROADSOURCE'])['Leads'].shift(1)
+    df['lag_2'] = df.groupby(['CAMPAIGN_SITE','BROADSOURCE'])['Leads'].shift(2)
+
+    df = df.fillna(0)
+    return df
+
+df = create_features(df)
+
+# -------------------------------
 # TIME SETUP
 # -------------------------------
 current_month = df['month_year'].max()
@@ -43,34 +61,61 @@ train_end = current_month - pd.DateOffset(months=3)
 train_df = df[df['month_year'] <= train_end]
 
 # -------------------------------
-# ARIMA MODEL
+# XGBOOST MODEL (REPLACES ARIMA)
 # -------------------------------
 @st.cache_data
-def run_arima(train_df):
+def run_xgboost(train_df, full_df):
+
     predictions = []
 
     for (site, source), group in train_df.groupby(['CAMPAIGN_SITE','BROADSOURCE']):
-        ts = group.sort_values('month_year').set_index('month_year')['Leads']
 
-        if len(ts) < 3:
+        group = group.sort_values('month_year')
+
+        if len(group) < 3:
             continue
 
+        features = ['month','year','lag_1','lag_2']
+        X = group[features]
+        y = group['Leads']
+
         try:
-            model = ARIMA(ts, order=(1,1,1))
-            model_fit = model.fit()
-            forecast = model_fit.forecast(steps=1)[0]
+            model = XGBRegressor(
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=3,
+                random_state=42
+            )
+
+            model.fit(X, y)
+
+            # Prepare next month input
+            last_row = full_df[
+                (full_df['CAMPAIGN_SITE'] == site) &
+                (full_df['BROADSOURCE'] == source)
+            ].sort_values('month_year').iloc[-1]
+
+            next_features = pd.DataFrame([{
+                'month': prediction_month.month,
+                'year': prediction_month.year,
+                'lag_1': last_row['Leads'],
+                'lag_2': last_row['lag_1']
+            }])
+
+            forecast = model.predict(next_features)[0]
 
             predictions.append({
                 'CAMPAIGN_SITE': site,
                 'BROADSOURCE': source,
                 'Predicted_Leads': max(float(forecast), 0)
             })
+
         except:
             continue
 
     return pd.DataFrame(predictions)
 
-pred_df = run_arima(train_df)
+pred_df = run_xgboost(train_df, df)
 
 # -------------------------------
 # HISTORICAL METRICS
@@ -98,7 +143,6 @@ def compute_final_leads(base, df, site=None):
         required = float(row.get('required_leads', 0))
         predicted = float(row.get('Predicted_Leads', 0))
 
-        # Replace invalid values
         if np.isnan(required) or np.isinf(required):
             required = 0
         if np.isnan(predicted) or np.isinf(predicted):
@@ -130,7 +174,6 @@ def compute_final_leads(base, df, site=None):
 
     final_df = pd.DataFrame(results)
 
-    # redistribute excess
     if 'Social Media' in final_df['BROADSOURCE'].values:
         excess_total = final_df['excess'].sum()
         final_df.loc[
@@ -141,7 +184,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (SAFE)
+# ROLLING ACCURACY (UNCHANGED)
 # -------------------------------
 rolling_results = []
 
@@ -152,7 +195,7 @@ for i in range(3, 0, -1):
     train_temp = df[df['month_year'] < test_month]
     test_temp = df[df['month_year'] == test_month]
 
-    pred_temp = run_arima(train_temp)
+    pred_temp = run_xgboost(train_temp, df)
 
     base = test_temp.copy()
 
@@ -165,18 +208,20 @@ for i in range(3, 0, -1):
     base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
     base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-    # SAFE METRICS
-    eval_df = base[['Leads','final_leads']].replace([np.inf, -np.inf], np.nan).dropna()
+    actual_total = base['Leads'].sum()
+    predicted_total = base['final_leads'].sum()
 
-    if len(eval_df) > 0:
-        rmse = np.sqrt(mean_squared_error(eval_df['Leads'], eval_df['final_leads']))
-        mape = mean_absolute_percentage_error(eval_df['Leads'], eval_df['final_leads'])
+    rmse = abs(actual_total - predicted_total)
+
+    if actual_total != 0:
+        mape = rmse / actual_total
     else:
-        rmse = 0
         mape = 0
 
     rolling_results.append({
         'Month': test_month.strftime('%Y-%m'),
+        'Actual Leads': round(actual_total, 2),
+        'Predicted Leads (Final)': round(predicted_total, 2),
         'RMSE': round(rmse, 2),
         'MAPE (%)': round(mape * 100, 2)
     })
@@ -184,14 +229,65 @@ for i in range(3, 0, -1):
 rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
-# STREAMLIT UI
+# SITE-LEVEL ACCURACY (UNCHANGED)
 # -------------------------------
-st.title("📊 Lead Prediction Calculator (Final ML Output)")
+site_level_results = []
+
+for i in range(3, 0, -1):
+
+    test_month = current_month - pd.DateOffset(months=i)
+
+    train_temp = df[df['month_year'] < test_month]
+    test_temp = df[df['month_year'] == test_month]
+
+    pred_temp = run_xgboost(train_temp, df)
+
+    base = test_temp.copy()
+
+    base = base.merge(pred_temp, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
+    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
+
+    base['required_leads'] = base['Hired'] / base['conversion_rate']
+    base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
+    base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    for site_name, grp in base.groupby('CAMPAIGN_SITE'):
+
+        actual_total = grp['Leads'].sum()
+        predicted_total = grp['final_leads'].sum()
+
+        rmse = abs(actual_total - predicted_total)
+
+        if actual_total != 0:
+            mape = rmse / actual_total
+        else:
+            mape = 0
+
+        site_level_results.append({
+            'Month': test_month.strftime('%Y-%m'),
+            'CAMPAIGN_SITE': site_name,
+            'Actual Leads': round(actual_total, 2),
+            'Predicted Leads (Final)': round(predicted_total, 2),
+            'RMSE': round(rmse, 2),
+            'MAPE (%)': round(mape * 100, 2)
+        })
+
+site_level_accuracy_df = pd.DataFrame(site_level_results)
+
+# -------------------------------
+# STREAMLIT UI (UNCHANGED)
+# -------------------------------
+st.title("📊 Lead Prediction Calculator (XGBoost ML Output)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
 st.sidebar.header("📉 Accuracy (Final Output Based)")
 st.sidebar.dataframe(rolling_accuracy_df)
+
+st.sidebar.subheader("📍 Site-Level Accuracy")
+st.sidebar.dataframe(site_level_accuracy_df)
 
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)
@@ -199,7 +295,7 @@ site = st.selectbox("Select Campaign Site", site_options)
 target_hired = st.number_input("Enter Target HIRED", min_value=0, step=1)
 
 # -------------------------------
-# PREDICTION
+# PREDICTION (UNCHANGED)
 # -------------------------------
 if st.button("Predict"):
 

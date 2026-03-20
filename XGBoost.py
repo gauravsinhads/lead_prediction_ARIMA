@@ -34,7 +34,7 @@ def load_data():
 df = load_data()
 
 # -------------------------------
-# FEATURE ENGINEERING (FAST)
+# FEATURE ENGINEERING
 # -------------------------------
 def create_features(df):
     df = df.copy()
@@ -42,7 +42,6 @@ def create_features(df):
     df['month'] = df['month_year'].dt.month
     df['year'] = df['month_year'].dt.year
 
-    # Encode categorical
     df['site_id'] = df['CAMPAIGN_SITE'].astype('category').cat.codes
     df['source_id'] = df['BROADSOURCE'].astype('category').cat.codes
 
@@ -67,9 +66,9 @@ train_end = current_month - pd.DateOffset(months=3)
 train_df = df[df['month_year'] <= train_end]
 
 # -------------------------------
-# TRAIN MODEL (GLOBAL FAST MODEL)
+# TRAIN MODEL (CACHE SAFE)
 # -------------------------------
-@st.cache_data
+@st.cache_resource
 def train_xgboost(train_df):
 
     features = ['month','year','lag_1','lag_2','site_id','source_id']
@@ -92,14 +91,16 @@ def train_xgboost(train_df):
     return model
 
 # -------------------------------
-# FAST PREDICTION
+# PREDICTION (NO CACHE → FIX)
 # -------------------------------
-@st.cache_data
 def generate_predictions(model, df, prediction_month):
 
     latest = df.sort_values('month_year').groupby(
         ['CAMPAIGN_SITE','BROADSOURCE']
     ).tail(1)
+
+    if latest.empty:
+        return pd.DataFrame(columns=['CAMPAIGN_SITE','BROADSOURCE','Predicted_Leads'])
 
     pred_df = latest.copy()
 
@@ -144,10 +145,8 @@ def compute_final_leads(base, df, site=None):
         required = float(row.get('required_leads', 0))
         predicted = float(row.get('Predicted_Leads', 0))
 
-        if np.isnan(required) or np.isinf(required):
-            required = 0
-        if np.isnan(predicted) or np.isinf(predicted):
-            predicted = 0
+        required = 0 if np.isnan(required) or np.isinf(required) else required
+        predicted = 0 if np.isnan(predicted) or np.isinf(predicted) else predicted
 
         final = max(required, predicted)
 
@@ -159,10 +158,7 @@ def compute_final_leads(base, df, site=None):
         else:
             max_leads = df[df['BROADSOURCE'] == source]['Leads'].max()
 
-        if pd.isna(max_leads):
-            limit = final
-        else:
-            limit = 1.5 * float(max_leads)
+        limit = final if pd.isna(max_leads) else 1.5 * float(max_leads)
 
         capped = min(final, limit)
         excess = final - capped
@@ -185,7 +181,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (OPTIMIZED)
+# ROLLING ACCURACY
 # -------------------------------
 rolling_results = []
 
@@ -274,7 +270,7 @@ site_level_accuracy_df = pd.DataFrame(site_level_results)
 # -------------------------------
 # STREAMLIT UI
 # -------------------------------
-st.title("📊 Lead Prediction Calculator (XGBoost - Optimized)")
+st.title("📊 Lead Prediction Calculator (XGBoost - Stable & Fast)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 

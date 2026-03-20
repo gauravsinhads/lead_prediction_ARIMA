@@ -34,19 +34,25 @@ def load_data():
 df = load_data()
 
 # -------------------------------
-# FEATURE ENGINEERING
+# FEATURE ENGINEERING (FAST)
 # -------------------------------
 def create_features(df):
     df = df.copy()
+
     df['month'] = df['month_year'].dt.month
     df['year'] = df['month_year'].dt.year
 
-    # Lag features
+    # Encode categorical
+    df['site_id'] = df['CAMPAIGN_SITE'].astype('category').cat.codes
+    df['source_id'] = df['BROADSOURCE'].astype('category').cat.codes
+
     df = df.sort_values('month_year')
+
     df['lag_1'] = df.groupby(['CAMPAIGN_SITE','BROADSOURCE'])['Leads'].shift(1)
     df['lag_2'] = df.groupby(['CAMPAIGN_SITE','BROADSOURCE'])['Leads'].shift(2)
 
     df = df.fillna(0)
+
     return df
 
 df = create_features(df)
@@ -61,61 +67,56 @@ train_end = current_month - pd.DateOffset(months=3)
 train_df = df[df['month_year'] <= train_end]
 
 # -------------------------------
-# XGBOOST MODEL (REPLACES ARIMA)
+# TRAIN MODEL (GLOBAL FAST MODEL)
 # -------------------------------
 @st.cache_data
-def run_xgboost(train_df, full_df):
+def train_xgboost(train_df):
 
-    predictions = []
+    features = ['month','year','lag_1','lag_2','site_id','source_id']
 
-    for (site, source), group in train_df.groupby(['CAMPAIGN_SITE','BROADSOURCE']):
+    X = train_df[features]
+    y = train_df['Leads']
 
-        group = group.sort_values('month_year')
+    model = XGBRegressor(
+        n_estimators=50,
+        max_depth=4,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        n_jobs=-1
+    )
 
-        if len(group) < 3:
-            continue
+    model.fit(X, y)
 
-        features = ['month','year','lag_1','lag_2']
-        X = group[features]
-        y = group['Leads']
+    return model
 
-        try:
-            model = XGBRegressor(
-                n_estimators=100,
-                learning_rate=0.1,
-                max_depth=3,
-                random_state=42
-            )
+# -------------------------------
+# FAST PREDICTION
+# -------------------------------
+@st.cache_data
+def generate_predictions(model, df, prediction_month):
 
-            model.fit(X, y)
+    latest = df.sort_values('month_year').groupby(
+        ['CAMPAIGN_SITE','BROADSOURCE']
+    ).tail(1)
 
-            # Prepare next month input
-            last_row = full_df[
-                (full_df['CAMPAIGN_SITE'] == site) &
-                (full_df['BROADSOURCE'] == source)
-            ].sort_values('month_year').iloc[-1]
+    pred_df = latest.copy()
 
-            next_features = pd.DataFrame([{
-                'month': prediction_month.month,
-                'year': prediction_month.year,
-                'lag_1': last_row['Leads'],
-                'lag_2': last_row['lag_1']
-            }])
+    pred_df['month'] = prediction_month.month
+    pred_df['year'] = prediction_month.year
 
-            forecast = model.predict(next_features)[0]
+    features = ['month','year','lag_1','lag_2','site_id','source_id']
 
-            predictions.append({
-                'CAMPAIGN_SITE': site,
-                'BROADSOURCE': source,
-                'Predicted_Leads': max(float(forecast), 0)
-            })
+    preds = model.predict(pred_df[features])
 
-        except:
-            continue
+    pred_df['Predicted_Leads'] = np.maximum(preds, 0)
 
-    return pd.DataFrame(predictions)
+    return pred_df[['CAMPAIGN_SITE','BROADSOURCE','Predicted_Leads']]
 
-pred_df = run_xgboost(train_df, df)
+# Train once
+model = train_xgboost(train_df)
+pred_df = generate_predictions(model, df, prediction_month)
 
 # -------------------------------
 # HISTORICAL METRICS
@@ -184,7 +185,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (UNCHANGED)
+# ROLLING ACCURACY (OPTIMIZED)
 # -------------------------------
 rolling_results = []
 
@@ -195,7 +196,8 @@ for i in range(3, 0, -1):
     train_temp = df[df['month_year'] < test_month]
     test_temp = df[df['month_year'] == test_month]
 
-    pred_temp = run_xgboost(train_temp, df)
+    model_temp = train_xgboost(train_temp)
+    pred_temp = generate_predictions(model_temp, df, test_month)
 
     base = test_temp.copy()
 
@@ -212,11 +214,7 @@ for i in range(3, 0, -1):
     predicted_total = base['final_leads'].sum()
 
     rmse = abs(actual_total - predicted_total)
-
-    if actual_total != 0:
-        mape = rmse / actual_total
-    else:
-        mape = 0
+    mape = rmse / actual_total if actual_total != 0 else 0
 
     rolling_results.append({
         'Month': test_month.strftime('%Y-%m'),
@@ -229,7 +227,7 @@ for i in range(3, 0, -1):
 rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
-# SITE-LEVEL ACCURACY (UNCHANGED)
+# SITE-LEVEL ACCURACY
 # -------------------------------
 site_level_results = []
 
@@ -240,7 +238,8 @@ for i in range(3, 0, -1):
     train_temp = df[df['month_year'] < test_month]
     test_temp = df[df['month_year'] == test_month]
 
-    pred_temp = run_xgboost(train_temp, df)
+    model_temp = train_xgboost(train_temp)
+    pred_temp = generate_predictions(model_temp, df, test_month)
 
     base = test_temp.copy()
 
@@ -259,11 +258,7 @@ for i in range(3, 0, -1):
         predicted_total = grp['final_leads'].sum()
 
         rmse = abs(actual_total - predicted_total)
-
-        if actual_total != 0:
-            mape = rmse / actual_total
-        else:
-            mape = 0
+        mape = rmse / actual_total if actual_total != 0 else 0
 
         site_level_results.append({
             'Month': test_month.strftime('%Y-%m'),
@@ -277,9 +272,9 @@ for i in range(3, 0, -1):
 site_level_accuracy_df = pd.DataFrame(site_level_results)
 
 # -------------------------------
-# STREAMLIT UI (UNCHANGED)
+# STREAMLIT UI
 # -------------------------------
-st.title("📊 Lead Prediction Calculator (XGBoost ML Output)")
+st.title("📊 Lead Prediction Calculator (XGBoost - Optimized)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
@@ -295,7 +290,7 @@ site = st.selectbox("Select Campaign Site", site_options)
 target_hired = st.number_input("Enter Target HIRED", min_value=0, step=1)
 
 # -------------------------------
-# PREDICTION (UNCHANGED)
+# PREDICTION
 # -------------------------------
 if st.button("Predict"):
 
@@ -313,9 +308,9 @@ if st.button("Predict"):
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
         base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-        arima_agg = pred_df.groupby('BROADSOURCE')['Predicted_Leads'].sum().reset_index()
+        xgb_agg = pred_df.groupby('BROADSOURCE')['Predicted_Leads'].sum().reset_index()
 
-        base = base.merge(arima_agg, on='BROADSOURCE', how='left')
+        base = base.merge(xgb_agg, on='BROADSOURCE', how='left')
         base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
         output = compute_final_leads(base, df, site=None)
@@ -328,9 +323,9 @@ if st.button("Predict"):
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
         base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-        arima_site = pred_df[pred_df['CAMPAIGN_SITE'] == site]
+        xgb_site = pred_df[pred_df['CAMPAIGN_SITE'] == site]
 
-        base = base.merge(arima_site[['BROADSOURCE','Predicted_Leads']], on='BROADSOURCE', how='left')
+        base = base.merge(xgb_site[['BROADSOURCE','Predicted_Leads']], on='BROADSOURCE', how='left')
         base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
         output = compute_final_leads(base, df, site=site)

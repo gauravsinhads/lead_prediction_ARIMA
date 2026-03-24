@@ -6,5 +6,4 @@ statsmodels
 scikit-learn
 xgboost
 prophet
-PyCaret
 

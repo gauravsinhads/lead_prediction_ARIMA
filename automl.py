@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
 import streamlit as st
-from pycaret.regression import setup, compare_models, predict_model
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
 
 # -------------------------------
 # LOAD DATA
@@ -53,13 +55,12 @@ def create_features(data):
     return data
 
 # -------------------------------
-# TRAIN MODELS ONCE (CACHED)
+# FAST AUTOML (LIGHTWEIGHT)
 # -------------------------------
 @st.cache_resource
-def train_automl_models(train_df):
+def train_models(train_df):
 
-    df_feat = create_features(train_df)
-    df_feat = df_feat.dropna()
+    df_feat = create_features(train_df).dropna()
 
     models_dict = {}
 
@@ -68,40 +69,43 @@ def train_automl_models(train_df):
         if len(group) < 5:
             continue
 
-        try:
-            model_data = group[['Leads','month_num','year','lag_1','lag_2']]
+        X = group[['month_num','year','lag_1','lag_2']]
+        y = group['Leads']
 
-            setup(
-                data=model_data,
-                target='Leads',
-                session_id=42,
-                silent=True,
-                verbose=False,
-                html=False
-            )
+        # Try 2 models (fast AutoML)
+        models = {
+            "lr": LinearRegression(),
+            "rf": RandomForestRegressor(n_estimators=50, random_state=42)
+        }
 
-            # ⚡ limited models → fast
-            best_model = compare_models(
-                include=['lr','rf','lightgbm'],
-                n_select=1
-            )
+        best_model = None
+        best_rmse = float('inf')
 
+        for model in models.values():
+            try:
+                model.fit(X, y)
+                preds = model.predict(X)
+                rmse = np.sqrt(mean_squared_error(y, preds))
+
+                if rmse < best_rmse:
+                    best_rmse = rmse
+                    best_model = model
+            except:
+                continue
+
+        if best_model:
             models_dict[(site, source)] = best_model
-
-        except:
-            continue
 
     return models_dict
 
 # -------------------------------
-# PREDICTION USING TRAINED MODELS
+# PREDICTION
 # -------------------------------
 def run_automl(train_df):
 
-    models_dict = train_automl_models(train_df)
+    models_dict = train_models(train_df)
 
-    df_feat = create_features(train_df)
-    df_feat = df_feat.dropna()
+    df_feat = create_features(train_df).dropna()
 
     predictions = []
 
@@ -122,8 +126,7 @@ def run_automl(train_df):
                 'lag_2': [group.iloc[-2]['Leads']]
             })
 
-            pred = predict_model(model, data=future)
-            forecast = pred['prediction_label'].iloc[0]
+            forecast = model.predict(future)[0]
 
             predictions.append({
                 'CAMPAIGN_SITE': site,
@@ -136,7 +139,7 @@ def run_automl(train_df):
 
     return pd.DataFrame(predictions)
 
-# 🔥 RUN ONCE (cached internally)
+# Run once
 pred_df = run_automl(train_df)
 
 # -------------------------------
@@ -165,10 +168,8 @@ def compute_final_leads(base, df, site=None):
         required = float(row.get('required_leads', 0))
         predicted = float(row.get('Predicted_Leads', 0))
 
-        if np.isnan(required) or np.isinf(required):
-            required = 0
-        if np.isnan(predicted) or np.isinf(predicted):
-            predicted = 0
+        required = 0 if np.isnan(required) or np.isinf(required) else required
+        predicted = 0 if np.isnan(predicted) or np.isinf(predicted) else predicted
 
         final = max(required, predicted)
 
@@ -180,10 +181,7 @@ def compute_final_leads(base, df, site=None):
         else:
             max_leads = df[df['BROADSOURCE'] == source]['Leads'].max()
 
-        if pd.isna(max_leads):
-            limit = final
-        else:
-            limit = 1.5 * float(max_leads)
+        limit = final if pd.isna(max_leads) else 1.5 * float(max_leads)
 
         capped = min(final, limit)
         excess = final - capped
@@ -206,7 +204,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (FAST VERSION)
+# ROLLING ACCURACY (FAST)
 # -------------------------------
 rolling_results = []
 
@@ -218,7 +216,6 @@ for i in range(3, 0, -1):
 
     base = test_temp.copy()
 
-    # ⚡ reuse same predictions (no retraining)
     base = base.merge(pred_df, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
     base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
@@ -245,58 +242,14 @@ for i in range(3, 0, -1):
 rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
-# SITE-LEVEL ACCURACY (FAST)
+# UI
 # -------------------------------
-site_level_results = []
-
-for i in range(3, 0, -1):
-
-    test_month = current_month - pd.DateOffset(months=i)
-
-    test_temp = df[df['month_year'] == test_month]
-
-    base = test_temp.copy()
-
-    base = base.merge(pred_df, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
-    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
-
-    base['required_leads'] = base['Hired'] / base['conversion_rate']
-    base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
-
-    base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
-    base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
-
-    for site_name, grp in base.groupby('CAMPAIGN_SITE'):
-
-        actual_total = grp['Leads'].sum()
-        predicted_total = grp['final_leads'].sum()
-
-        rmse = abs(actual_total - predicted_total)
-        mape = rmse / actual_total if actual_total != 0 else 0
-
-        site_level_results.append({
-            'Month': test_month.strftime('%Y-%m'),
-            'CAMPAIGN_SITE': site_name,
-            'Actual Leads': round(actual_total, 2),
-            'Predicted Leads (Final)': round(predicted_total, 2),
-            'RMSE': round(rmse, 2),
-            'MAPE (%)': round(mape * 100, 2)
-        })
-
-site_level_accuracy_df = pd.DataFrame(site_level_results)
-
-# -------------------------------
-# STREAMLIT UI
-# -------------------------------
-st.title("📊 Lead Prediction Calculator (AutoML - Optimized)")
+st.title("📊 Lead Prediction Calculator (Fast AutoML)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
 st.sidebar.header("📉 Accuracy (Final Output Based)")
 st.sidebar.dataframe(rolling_accuracy_df)
-
-st.sidebar.subheader("📍 Site-Level Accuracy")
-st.sidebar.dataframe(site_level_accuracy_df)
 
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)

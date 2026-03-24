@@ -55,7 +55,7 @@ def create_features(data):
     return data
 
 # -------------------------------
-# FAST AUTOML (LIGHTWEIGHT)
+# FAST AUTOML
 # -------------------------------
 @st.cache_resource
 def train_models(train_df):
@@ -72,7 +72,6 @@ def train_models(train_df):
         X = group[['month_num','year','lag_1','lag_2']]
         y = group['Leads']
 
-        # Try 2 models (fast AutoML)
         models = {
             "lr": LinearRegression(),
             "rf": RandomForestRegressor(n_estimators=50, random_state=42)
@@ -139,7 +138,6 @@ def run_automl(train_df):
 
     return pd.DataFrame(predictions)
 
-# Run once
 pred_df = run_automl(train_df)
 
 # -------------------------------
@@ -155,7 +153,7 @@ hist['conversion_rate'] = hist['Hired'] / hist['Leads']
 hist = hist.replace([np.inf, -np.inf], 0).fillna(0)
 
 # -------------------------------
-# FINAL LEADS FUNCTION (UNCHANGED)
+# FINAL LEADS FUNCTION
 # -------------------------------
 def compute_final_leads(base, df, site=None):
 
@@ -204,16 +202,16 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (FAST)
+# ROLLING ACCURACY
 # -------------------------------
 rolling_results = []
+site_level_results = []
 
 for i in range(3, 0, -1):
 
     test_month = current_month - pd.DateOffset(months=i)
 
     test_temp = df[df['month_year'] == test_month]
-
     base = test_temp.copy()
 
     base = base.merge(pred_df, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
@@ -225,6 +223,7 @@ for i in range(3, 0, -1):
     base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
     base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
+    # --- Overall ---
     actual_total = base['Leads'].sum()
     predicted_total = base['final_leads'].sum()
 
@@ -239,7 +238,26 @@ for i in range(3, 0, -1):
         'MAPE (%)': round(mape * 100, 2)
     })
 
+    # --- Site-Level ---
+    for site_name, grp in base.groupby('CAMPAIGN_SITE'):
+
+        actual_total = grp['Leads'].sum()
+        predicted_total = grp['final_leads'].sum()
+
+        rmse = abs(actual_total - predicted_total)
+        mape = rmse / actual_total if actual_total != 0 else 0
+
+        site_level_results.append({
+            'Month': test_month.strftime('%Y-%m'),
+            'CAMPAIGN_SITE': site_name,
+            'Actual Leads': round(actual_total, 2),
+            'Predicted Leads (Final)': round(predicted_total, 2),
+            'RMSE': round(rmse, 2),
+            'MAPE (%)': round(mape * 100, 2)
+        })
+
 rolling_accuracy_df = pd.DataFrame(rolling_results)
+site_level_accuracy_df = pd.DataFrame(site_level_results)
 
 # -------------------------------
 # UI
@@ -250,6 +268,9 @@ st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
 st.sidebar.header("📉 Accuracy (Final Output Based)")
 st.sidebar.dataframe(rolling_accuracy_df)
+
+st.sidebar.subheader("📍 Site-Level Accuracy")
+st.sidebar.dataframe(site_level_accuracy_df)
 
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)

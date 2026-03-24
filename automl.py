@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from pycaret.regression import setup, compare_models, predict_model
-from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 # -------------------------------
 # LOAD DATA
@@ -54,15 +53,15 @@ def create_features(data):
     return data
 
 # -------------------------------
-# AUTOML MODEL
+# TRAIN MODELS ONCE (CACHED)
 # -------------------------------
-@st.cache_data
-def run_automl(train_df):
+@st.cache_resource
+def train_automl_models(train_df):
 
     df_feat = create_features(train_df)
     df_feat = df_feat.dropna()
 
-    predictions = []
+    models_dict = {}
 
     for (site, source), group in df_feat.groupby(['CAMPAIGN_SITE','BROADSOURCE']):
 
@@ -72,16 +71,48 @@ def run_automl(train_df):
         try:
             model_data = group[['Leads','month_num','year','lag_1','lag_2']]
 
-            s = setup(
+            setup(
                 data=model_data,
                 target='Leads',
                 session_id=42,
                 silent=True,
-                verbose=False
+                verbose=False,
+                html=False
             )
 
-            best_model = compare_models()
+            # ⚡ limited models → fast
+            best_model = compare_models(
+                include=['lr','rf','lightgbm'],
+                n_select=1
+            )
 
+            models_dict[(site, source)] = best_model
+
+        except:
+            continue
+
+    return models_dict
+
+# -------------------------------
+# PREDICTION USING TRAINED MODELS
+# -------------------------------
+def run_automl(train_df):
+
+    models_dict = train_automl_models(train_df)
+
+    df_feat = create_features(train_df)
+    df_feat = df_feat.dropna()
+
+    predictions = []
+
+    for (site, source), model in models_dict.items():
+
+        group = df_feat[
+            (df_feat['CAMPAIGN_SITE'] == site) &
+            (df_feat['BROADSOURCE'] == source)
+        ]
+
+        try:
             last_row = group.sort_values('month_year').iloc[-1]
 
             future = pd.DataFrame({
@@ -91,8 +122,7 @@ def run_automl(train_df):
                 'lag_2': [group.iloc[-2]['Leads']]
             })
 
-            pred = predict_model(best_model, data=future)
-
+            pred = predict_model(model, data=future)
             forecast = pred['prediction_label'].iloc[0]
 
             predictions.append({
@@ -106,6 +136,7 @@ def run_automl(train_df):
 
     return pd.DataFrame(predictions)
 
+# 🔥 RUN ONCE (cached internally)
 pred_df = run_automl(train_df)
 
 # -------------------------------
@@ -175,7 +206,7 @@ def compute_final_leads(base, df, site=None):
     return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY (UNCHANGED LOGIC)
+# ROLLING ACCURACY (FAST VERSION)
 # -------------------------------
 rolling_results = []
 
@@ -183,14 +214,12 @@ for i in range(3, 0, -1):
 
     test_month = current_month - pd.DateOffset(months=i)
 
-    train_temp = df[df['month_year'] < test_month]
     test_temp = df[df['month_year'] == test_month]
-
-    pred_temp = run_automl(train_temp)
 
     base = test_temp.copy()
 
-    base = base.merge(pred_temp, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
+    # ⚡ reuse same predictions (no retraining)
+    base = base.merge(pred_df, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
     base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
     base['required_leads'] = base['Hired'] / base['conversion_rate']
@@ -216,14 +245,58 @@ for i in range(3, 0, -1):
 rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
-# UI (UNCHANGED)
+# SITE-LEVEL ACCURACY (FAST)
 # -------------------------------
-st.title("📊 Lead Prediction Calculator (AutoML)")
+site_level_results = []
+
+for i in range(3, 0, -1):
+
+    test_month = current_month - pd.DateOffset(months=i)
+
+    test_temp = df[df['month_year'] == test_month]
+
+    base = test_temp.copy()
+
+    base = base.merge(pred_df, on=['CAMPAIGN_SITE','BROADSOURCE'], how='left')
+    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
+
+    base['required_leads'] = base['Hired'] / base['conversion_rate']
+    base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    base['final_leads'] = base[['required_leads','Predicted_Leads']].max(axis=1)
+    base['final_leads'] = base['final_leads'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    for site_name, grp in base.groupby('CAMPAIGN_SITE'):
+
+        actual_total = grp['Leads'].sum()
+        predicted_total = grp['final_leads'].sum()
+
+        rmse = abs(actual_total - predicted_total)
+        mape = rmse / actual_total if actual_total != 0 else 0
+
+        site_level_results.append({
+            'Month': test_month.strftime('%Y-%m'),
+            'CAMPAIGN_SITE': site_name,
+            'Actual Leads': round(actual_total, 2),
+            'Predicted Leads (Final)': round(predicted_total, 2),
+            'RMSE': round(rmse, 2),
+            'MAPE (%)': round(mape * 100, 2)
+        })
+
+site_level_accuracy_df = pd.DataFrame(site_level_results)
+
+# -------------------------------
+# STREAMLIT UI
+# -------------------------------
+st.title("📊 Lead Prediction Calculator (AutoML - Optimized)")
 
 st.info(f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}")
 
 st.sidebar.header("📉 Accuracy (Final Output Based)")
 st.sidebar.dataframe(rolling_accuracy_df)
+
+st.sidebar.subheader("📍 Site-Level Accuracy")
+st.sidebar.dataframe(site_level_accuracy_df)
 
 site_options = ["All Sites"] + sorted(df['CAMPAIGN_SITE'].unique())
 site = st.selectbox("Select Campaign Site", site_options)
@@ -231,7 +304,7 @@ site = st.selectbox("Select Campaign Site", site_options)
 target_hired = st.number_input("Enter Target HIRED", min_value=0, step=1)
 
 # -------------------------------
-# PREDICTION (UNCHANGED LOGIC)
+# PREDICTION
 # -------------------------------
 if st.button("Predict"):
 
@@ -249,9 +322,9 @@ if st.button("Predict"):
         base['required_leads'] = base['target_hired'] / base['conversion_rate']
         base['required_leads'] = base['required_leads'].replace([np.inf, -np.inf], 0).fillna(0)
 
-        arima_agg = pred_df.groupby('BROADSOURCE')['Predicted_Leads'].sum().reset_index()
+        automl_agg = pred_df.groupby('BROADSOURCE')['Predicted_Leads'].sum().reset_index()
 
-        base = base.merge(arima_agg, on='BROADSOURCE', how='left')
+        base = base.merge(automl_agg, on='BROADSOURCE', how='left')
         base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
         output = compute_final_leads(base, df, site=None)

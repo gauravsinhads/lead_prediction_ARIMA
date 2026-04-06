@@ -68,6 +68,12 @@ def run_arima(train_df):
         except:
             continue
 
+    # --- BUG FIX APPLIED HERE ---
+    # Ensures the DataFrame always has the required columns for merging, 
+    # even if the predictions list is empty.
+    if not predictions:
+        return pd.DataFrame(columns=['CAMPAIGN_SITE', 'BROADSOURCE', 'Predicted_Leads'])
+
     return pd.DataFrame(predictions)
 
 pred_df = run_arima(train_df)

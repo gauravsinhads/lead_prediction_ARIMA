@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import streamlit as st
-from snowflake.snowpark.context import get_active_session
 from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 import plotly.express as px
@@ -9,7 +8,6 @@ import plotly.express as px
 # -------------------------------
 # SNOWFLAKE SESSION
 # -------------------------------
-session = get_active_session()
 
 # -------------------------------
 # CUSTOM COLORS

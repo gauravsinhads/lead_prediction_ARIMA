@@ -8,7 +8,6 @@ import plotly.express as px
 # -------------------------------
 # SNOWFLAKE SESSION
 # -------------------------------
-session = get_active_session()
 
 # -------------------------------
 # CUSTOM COLORS

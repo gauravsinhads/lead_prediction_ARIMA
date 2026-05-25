@@ -8,15 +8,10 @@ import plotly.express as px
 # -------------------------------
 # CUSTOM COLORS
 # -------------------------------
-custom_colors = [
-    "#2F76B9","#3B9790","#F5BA2E","#6A4C93",
-    "#F77F00","#B4BBBE","#e6657b","#026df5","#5aede2"
-]
+custom_colors = ["#2F76B9","#3B9790","#F5BA2E","#6A4C93",
+"#F77F00","#B4BBBE","#e6657b","#026df5","#5aede2"]
 
-st.set_page_config(
-    page_title="Lead Prediction Calculator",
-    layout="wide"
-)
+st.set_page_config(page_title="Lead Prediction Calculator", layout="wide")
 
 # -------------------------------
 # LOAD DATA
@@ -47,10 +42,7 @@ def load_data():
         'Hired':'sum'
     })
 
-    df['conversion_rate'] = (
-        df['Hired'] / df['Leads']
-    )
-
+    df['conversion_rate'] = df['Hired'] / df['Leads']
     df['conversion_rate'] = df['conversion_rate'].replace(
         [np.inf,-np.inf],0
     ).fillna(0)
@@ -63,18 +55,12 @@ df = load_data()
 # TIME SETUP
 # -------------------------------
 current_month = df['month_year'].max()
-
-prediction_month = (
-    current_month + pd.DateOffset(months=1)
-)
+prediction_month = current_month + pd.DateOffset(months=1)
 
 # -------------------------------
-# TRAIN DATA (SECOND CODE LOGIC)
-# Uses ALL available data till current month
+# TRAIN DATA (till last month)
 # -------------------------------
-train_df = df[
-    df['month_year'] <= current_month
-]
+train_df = df[df['month_year'] <= current_month]
 
 # -------------------------------
 # ARIMA MODEL
@@ -88,9 +74,7 @@ def run_arima(train_df):
         ['CAMPAIGN_SITE','BROADSOURCE']
     ):
 
-        ts = group.sort_values(
-            'month_year'
-        ).set_index(
+        ts = group.sort_values('month_year').set_index(
             'month_year'
         )['Leads']
 
@@ -99,24 +83,15 @@ def run_arima(train_df):
 
         try:
 
-            model = ARIMA(
-                ts,
-                order=(1,1,1)
-            )
-
+            model = ARIMA(ts,order=(1,1,1))
             model_fit = model.fit()
 
-            forecast = model_fit.forecast(
-                steps=1
-            )[0]
+            forecast = model_fit.forecast(steps=1)[0]
 
             predictions.append({
                 'CAMPAIGN_SITE':site,
                 'BROADSOURCE':source,
-                'Predicted_Leads':max(
-                    float(forecast),
-                    0
-                )
+                'Predicted_Leads':max(float(forecast),0)
             })
 
         except:
@@ -147,21 +122,13 @@ hist = df.groupby(
     'Hired':'sum'
 }).reset_index()
 
-hist['share_hired'] = (
-    hist['Hired']
-    /
-    hist.groupby('CAMPAIGN_SITE')['Hired']
-    .transform('sum')
-)
+hist['share_hired'] = hist['Hired'] / hist.groupby(
+    'CAMPAIGN_SITE'
+)['Hired'].transform('sum')
 
-hist['conversion_rate'] = (
-    hist['Hired'] / hist['Leads']
-)
+hist['conversion_rate'] = hist['Hired'] / hist['Leads']
 
-hist = hist.replace(
-    [np.inf,-np.inf],
-    0
-).fillna(0)
+hist = hist.replace([np.inf,-np.inf],0).fillna(0)
 
 # -------------------------------
 # FINAL LEADS FUNCTION
@@ -174,13 +141,8 @@ def compute_final_leads(base,df,site=None):
 
         source = row['BROADSOURCE']
 
-        required = float(
-            row.get('required_leads',0)
-        )
-
-        predicted = float(
-            row.get('Predicted_Leads',0)
-        )
+        required = float(row.get('required_leads',0))
+        predicted = float(row.get('Predicted_Leads',0))
 
         if np.isnan(required) or np.isinf(required):
             required = 0
@@ -196,8 +158,7 @@ def compute_final_leads(base,df,site=None):
         if site:
 
             max_leads = df[
-                (df['CAMPAIGN_SITE']==site)
-                &
+                (df['CAMPAIGN_SITE']==site) &
                 (df['BROADSOURCE']==source)
             ]['Leads'].max()
 
@@ -213,7 +174,6 @@ def compute_final_leads(base,df,site=None):
             limit = 1.5 * float(max_leads)
 
         capped = min(final,limit)
-
         excess = final - capped
 
         results.append({
@@ -233,30 +193,19 @@ def compute_final_leads(base,df,site=None):
             'Lead Count Required'
         ] += excess_total
 
-    return final_df[
-        ['BROADSOURCE','Lead Count Required']
-    ]
+    return final_df[['BROADSOURCE','Lead Count Required']]
 
 # -------------------------------
-# ROLLING ACCURACY
+# ROLLING ACCURACY (UNCHANGED)
 # -------------------------------
 rolling_results = []
 
 for i in range(3,0,-1):
 
-    test_month = (
-        current_month
-        -
-        pd.DateOffset(months=i)
-    )
+    test_month = current_month - pd.DateOffset(months=i)
 
-    train_temp = df[
-        df['month_year'] < test_month
-    ]
-
-    test_temp = df[
-        df['month_year'] == test_month
-    ]
+    train_temp = df[df['month_year'] < test_month]
+    test_temp = df[df['month_year'] == test_month]
 
     pred_temp = run_arima(train_temp)
 
@@ -268,42 +217,23 @@ for i in range(3,0,-1):
         how='left'
     )
 
-    base['Predicted_Leads'] = (
-        base['Predicted_Leads']
-        .fillna(0)
-    )
+    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
-    base['required_leads'] = (
-        base['Hired']
-        /
-        base['conversion_rate']
-    )
-
-    base['required_leads'] = (
-        base['required_leads']
-        .replace([np.inf,-np.inf],0)
-        .fillna(0)
-    )
+    base['required_leads'] = base['Hired'] / base['conversion_rate']
+    base['required_leads'] = base['required_leads'].replace(
+        [np.inf,-np.inf],0
+    ).fillna(0)
 
     base['final_leads'] = base[
         ['required_leads','Predicted_Leads']
     ].max(axis=1)
 
     actual_total = base['Leads'].sum()
+    predicted_total = base['final_leads'].sum()
 
-    predicted_total = (
-        base['final_leads'].sum()
-    )
+    rmse = abs(actual_total - predicted_total)
 
-    rmse = abs(
-        actual_total - predicted_total
-    )
-
-    mape = (
-        rmse / actual_total
-        if actual_total != 0
-        else 0
-    )
+    mape = rmse / actual_total if actual_total != 0 else 0
 
     rolling_results.append({
         'Month':test_month.strftime('%Y-%m'),
@@ -313,9 +243,7 @@ for i in range(3,0,-1):
         'MAPE (%)':round(mape*100,2)
     })
 
-rolling_accuracy_df = pd.DataFrame(
-    rolling_results
-)
+rolling_accuracy_df = pd.DataFrame(rolling_results)
 
 # -------------------------------
 # SITE LEVEL ACCURACY
@@ -324,19 +252,10 @@ site_level_results = []
 
 for i in range(3,0,-1):
 
-    test_month = (
-        current_month
-        -
-        pd.DateOffset(months=i)
-    )
+    test_month = current_month - pd.DateOffset(months=i)
 
-    train_temp = df[
-        df['month_year'] < test_month
-    ]
-
-    test_temp = df[
-        df['month_year'] == test_month
-    ]
+    train_temp = df[df['month_year'] < test_month]
+    test_temp = df[df['month_year'] == test_month]
 
     pred_temp = run_arima(train_temp)
 
@@ -348,40 +267,22 @@ for i in range(3,0,-1):
         how='left'
     )
 
-    base['Predicted_Leads'] = (
-        base['Predicted_Leads']
-        .fillna(0)
-    )
+    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
-    base['required_leads'] = (
-        base['Hired']
-        /
-        base['conversion_rate']
-    )
+    base['required_leads'] = base['Hired'] / base['conversion_rate']
 
     base['final_leads'] = base[
         ['required_leads','Predicted_Leads']
     ].max(axis=1)
 
-    for site_name,grp in base.groupby(
-        'CAMPAIGN_SITE'
-    ):
+    for site_name,grp in base.groupby('CAMPAIGN_SITE'):
 
         actual_total = grp['Leads'].sum()
+        predicted_total = grp['final_leads'].sum()
 
-        predicted_total = (
-            grp['final_leads'].sum()
-        )
+        rmse = abs(actual_total - predicted_total)
 
-        rmse = abs(
-            actual_total - predicted_total
-        )
-
-        mape = (
-            rmse / actual_total
-            if actual_total != 0
-            else 0
-        )
+        mape = rmse / actual_total if actual_total != 0 else 0
 
         site_level_results.append({
             'Month':test_month.strftime('%Y-%m'),
@@ -392,28 +293,19 @@ for i in range(3,0,-1):
             'MAPE (%)':round(mape*100,2)
         })
 
-site_level_accuracy_df = pd.DataFrame(
-    site_level_results
-)
+site_level_accuracy_df = pd.DataFrame(site_level_results)
 
 # -------------------------------
 # FORMAT DISPLAY
 # -------------------------------
 def format_numbers(df):
 
-    cols = [
-        'Actual Leads',
-        'Predicted Leads (Final)',
-        'RMSE'
-    ]
+    cols = ['Actual Leads','Predicted Leads (Final)','RMSE']
 
     for col in cols:
 
         if col in df.columns:
-
-            df[col] = df[col].apply(
-                lambda x: f"{int(round(x)):,}"
-            )
+            df[col] = df[col].apply(lambda x: f"{int(round(x)):,}")
 
     return df
 
@@ -428,41 +320,23 @@ site_level_accuracy_display = format_numbers(
 # -------------------------------
 # STREAMLIT UI
 # -------------------------------
-st.title(
-    "📊 Lead Prediction Calculator (Final ML Output)"
-)
+st.title("📊 Lead Prediction Calculator (Final ML Output)")
 
 st.info(
-    f"📅 Prediction Month: "
-    f"{prediction_month.strftime('%Y-%m')}"
+    f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}"
 )
 
-st.sidebar.header(
-    "📉 Accuracy (Final Output Based)"
+st.sidebar.header("📉 Accuracy (Final Output Based)")
+st.sidebar.dataframe(rolling_accuracy_display)
+
+st.sidebar.subheader("📍 Site-Level Accuracy")
+st.sidebar.dataframe(site_level_accuracy_display)
+
+site_options = ["All Sites"] + sorted(
+    df['CAMPAIGN_SITE'].unique()
 )
 
-st.sidebar.dataframe(
-    rolling_accuracy_display
-)
-
-st.sidebar.subheader(
-    "📍 Site-Level Accuracy"
-)
-
-st.sidebar.dataframe(
-    site_level_accuracy_display
-)
-
-site_options = (
-    ["All Sites"]
-    +
-    sorted(df['CAMPAIGN_SITE'].unique())
-)
-
-site = st.selectbox(
-    "Select Campaign Site",
-    site_options
-)
+site = st.selectbox("Select Campaign Site",site_options)
 
 target_hired = st.number_input(
     "Enter Target HIRED",
@@ -486,44 +360,24 @@ if st.button("Predict"):
 
     else:
 
-        base = df[
-            df['CAMPAIGN_SITE']==site
-        ].groupby(
+        base = df[df['CAMPAIGN_SITE']==site].groupby(
             'BROADSOURCE'
         ).agg({
             'Leads':'sum',
             'Hired':'sum'
         }).reset_index()
 
-    base['share_hired'] = (
-        base['Hired']
-        /
-        base['Hired'].sum()
-    )
+    base['share_hired'] = base['Hired'] / base['Hired'].sum()
 
-    base['conversion_rate'] = (
-        base['Hired']
-        /
-        base['Leads']
-    )
+    base['conversion_rate'] = base['Hired'] / base['Leads']
 
-    base['target_hired'] = (
-        base['share_hired']
-        *
-        target_hired
-    )
+    base['target_hired'] = base['share_hired'] * target_hired
 
-    base['required_leads'] = (
-        base['target_hired']
-        /
-        base['conversion_rate']
-    )
+    base['required_leads'] = base['target_hired'] / base['conversion_rate']
 
-    base['required_leads'] = (
-        base['required_leads']
-        .replace([np.inf,-np.inf],0)
-        .fillna(0)
-    )
+    base['required_leads'] = base['required_leads'].replace(
+        [np.inf,-np.inf],0
+    ).fillna(0)
 
     if site == "All Sites":
 
@@ -531,11 +385,7 @@ if st.button("Predict"):
             'BROADSOURCE'
         )['Predicted_Leads'].sum().reset_index()
 
-        base = base.merge(
-            arima_agg,
-            on='BROADSOURCE',
-            how='left'
-        )
+        base = base.merge(arima_agg,on='BROADSOURCE',how='left')
 
     else:
 
@@ -544,17 +394,12 @@ if st.button("Predict"):
         ]
 
         base = base.merge(
-            arima_site[
-                ['BROADSOURCE','Predicted_Leads']
-            ],
+            arima_site[['BROADSOURCE','Predicted_Leads']],
             on='BROADSOURCE',
             how='left'
         )
 
-    base['Predicted_Leads'] = (
-        base['Predicted_Leads']
-        .fillna(0)
-    )
+    base['Predicted_Leads'] = base['Predicted_Leads'].fillna(0)
 
     output = compute_final_leads(
         base,
@@ -564,18 +409,15 @@ if st.button("Predict"):
 
     output['CAMPAIGN_SITE'] = site
 
-    output['Lead Count Required'] = (
-        output['Lead Count Required']
-        .round()
-        .astype(int)
-    )
+    output['Lead Count Required'] = output[
+        'Lead Count Required'
+    ].round().astype(int)
 
     final_output = output[
         ['CAMPAIGN_SITE','BROADSOURCE','Lead Count Required']
     ]
 
     st.subheader("📈 Final Lead Plan")
-
     st.dataframe(final_output)
 
     fig = px.bar(
@@ -588,7 +430,4 @@ if st.button("Predict"):
 
     fig.update_layout(showlegend=False)
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+    st.plotly_chart(fig,use_container_width=True)

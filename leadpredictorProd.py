@@ -5,8 +5,6 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 import plotly.express as px
 
-
-
 # -------------------------------
 # CUSTOM COLORS
 # -------------------------------

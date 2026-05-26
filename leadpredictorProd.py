@@ -19,7 +19,7 @@ st.set_page_config(page_title="Lead Prediction Calculator", layout="wide")
 @st.cache_data
 def load_data():
 
-    df = pd.read_csv("leads_prediction.csv")
+    df = pd.read_csv("leads_prediction.csv", encoding='utf-8-sig')
 
     df.columns = df.columns.str.strip().str.upper()
 

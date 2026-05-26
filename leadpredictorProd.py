@@ -60,7 +60,7 @@ prediction_month = current_month + pd.DateOffset(months=1)
 train_df = df[df['month_year'] <= current_month]
 
 # -------------------------------
-# ARIMA MODEL (FIXED)
+# ARIMA MODEL (ONLY FIX HERE)
 # -------------------------------
 @st.cache_data
 def run_arima(train_df):
@@ -94,9 +94,8 @@ def run_arima(train_df):
         except:
             continue
 
-    # ✅ FIX: Always return structured DataFrame
-    return pd.DataFrame(
-        predictions,
+    # ✅ ONLY FIX (keeps exact behavior)
+    return pd.DataFrame(predictions).reindex(
         columns=['CAMPAIGN_SITE','BROADSOURCE','Predicted_Leads']
     )
 
@@ -190,12 +189,6 @@ for i in range(3,0,-1):
 
     pred_temp = run_arima(train_temp)
 
-    # ✅ SAFETY (optional, but harmless)
-    if pred_temp.empty:
-        pred_temp = pd.DataFrame(
-            columns=['CAMPAIGN_SITE','BROADSOURCE','Predicted_Leads']
-        )
-
     base = test_temp.copy()
 
     base = base.merge(
@@ -235,10 +228,13 @@ rolling_accuracy_df = pd.DataFrame(rolling_results)
 # FORMAT DISPLAY
 # -------------------------------
 def format_numbers(df):
+
     cols = ['Actual Leads','Predicted Leads (Final)','RMSE']
+
     for col in cols:
         if col in df.columns:
             df[col] = df[col].apply(lambda x: f"{int(round(x)):,}")
+
     return df
 
 rolling_accuracy_display = format_numbers(
@@ -254,7 +250,7 @@ st.info(
     f"📅 Prediction Month: {prediction_month.strftime('%Y-%m')}"
 )
 
-st.sidebar.header("📉 Accuracy")
+st.sidebar.header("📉 Accuracy (Final Output Based)")
 st.sidebar.dataframe(rolling_accuracy_display)
 
 site_options = ["All Sites"] + sorted(
@@ -275,11 +271,16 @@ target_hired = st.number_input(
 if st.button("Predict"):
 
     if site == "All Sites":
-        base = df.groupby('BROADSOURCE').agg({
+
+        base = df.groupby(
+            'BROADSOURCE'
+        ).agg({
             'Leads':'sum',
             'Hired':'sum'
         }).reset_index()
+
     else:
+
         base = df[df['CAMPAIGN_SITE']==site].groupby(
             'BROADSOURCE'
         ).agg({
@@ -289,7 +290,6 @@ if st.button("Predict"):
 
     base['share_hired'] = base['Hired'] / base['Hired'].sum()
     base['conversion_rate'] = base['Hired'] / base['Leads']
-
     base['target_hired'] = base['share_hired'] * target_hired
     base['required_leads'] = base['target_hired'] / base['conversion_rate']
 
@@ -298,14 +298,19 @@ if st.button("Predict"):
     ).fillna(0)
 
     if site == "All Sites":
+
         arima_agg = pred_df.groupby(
             'BROADSOURCE'
         )['Predicted_Leads'].sum().reset_index()
+
         base = base.merge(arima_agg,on='BROADSOURCE',how='left')
+
     else:
+
         arima_site = pred_df[
             pred_df['CAMPAIGN_SITE']==site
         ]
+
         base = base.merge(
             arima_site[['BROADSOURCE','Predicted_Leads']],
             on='BROADSOURCE',
@@ -321,6 +326,7 @@ if st.button("Predict"):
     )
 
     output['CAMPAIGN_SITE'] = site
+
     output['Lead Count Required'] = output[
         'Lead Count Required'
     ].round().astype(int)
